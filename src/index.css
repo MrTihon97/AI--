@@ -1,0 +1,171 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", "Manrope", ui-sans-serif, sans-serif;
+
+  --color-brand: #3b82f6;
+  --color-brand-dark: #2563eb;
+  --color-brand-soft: #60a5fa;
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-surface: #f5f8fc;
+
+  --color-zone-red: #ef4444;
+  --color-zone-yellow: #f59e0b;
+  --color-zone-green: #22c55e;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: #f3f6fb;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(59, 130, 246, 0.09), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 100% 0%, rgba(147, 197, 253, 0.12), transparent 50%);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Soft white card like the reference */
+.soft-card {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+.btn-glow {
+  background: linear-gradient(180deg, #60a5fa 0%, #3b82f6 55%, #2563eb 100%);
+  color: #fff;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.35) inset,
+    0 10px 24px rgba(37, 99, 235, 0.35),
+    0 0 0 1px rgba(37, 99, 235, 0.08);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+.btn-glow:hover {
+  filter: brightness(1.04);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.4) inset,
+    0 14px 28px rgba(37, 99, 235, 0.42);
+}
+
+.btn-glow:active {
+  transform: scale(0.98);
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease both;
+}
+
+.stagger-1 {
+  animation-delay: 0.04s;
+}
+.stagger-2 {
+  animation-delay: 0.08s;
+}
+.stagger-3 {
+  animation-delay: 0.12s;
+}
+.stagger-4 {
+  animation-delay: 0.16s;
+}
+.stagger-5 {
+  animation-delay: 0.2s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.typing-dot {
+  animation: typing-bounce 1.2s infinite;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.stream-caret {
+  width: 2px;
+  height: 0.95em;
+  vertical-align: -0.1em;
+  background: #64748b;
+  animation: caret-blink 0.9s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up,
+  .animate-fade-in {
+    animation: none !important;
+  }
+
+  .stream-caret {
+    animation: none;
+    opacity: 1;
+  }
+}
