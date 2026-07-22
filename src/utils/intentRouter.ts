@@ -82,8 +82,68 @@ function pickRandom<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)]!
 }
 
-/** Случайная реплика: избегаем недавних и слишком похожих фраз. */
-function pickFreshReply(pool: string[], used: string[]): string {
+/** Синонимы/темы — чтобы ответ попадал в вопрос, а не рандом из пула. */
+const TOPIC_GROUPS: string[][] = [
+  ['журнал', 'тетрад', 'бумаг', 'закладк', 'excel', 'эксель', 'таблиц'],
+  ['whatsapp', 'ватсап', 'телеграм', 'instagram', 'смс', 'мессенджер'],
+  ['запись', 'записыв', 'расписан', 'кресл', 'слот', 'окн'],
+  ['потер', 'теря', 'заявк', 'лид', 'недозвон', 'не перезвон', 'пропущен'],
+  ['администратор', 'ирина', 'сотрудник', 'персонал'],
+  ['гигиен', 'повторн', 'возврат', 'обзвон', 'напоминан'],
+  ['цена', 'стоимость', 'тариф', 'дорого', 'бюджет', 'скидк', 'плат'],
+  ['внедр', 'обучен', 'перенос', 'миграц', 'простой', 'за один день'],
+  ['демо', 'созвон', 'тест', 'пилот', 'встреч', 'завтра'],
+  ['1с', 'медодс', 'битрикс', 'конкурент', 'аналог', 'crm'],
+  ['филиал', 'сеть', 'дашборд', 'отчет', 'отчёт', 'конверси'],
+  ['данн', '152', 'безопас', 'сервер', 'пдн'],
+]
+
+const STOP_WORDS = new Set([
+  'это', 'как', 'что', 'или', 'для', 'про', 'вас', 'вам', 'наш', 'наши',
+  'есть', 'было', 'будет', 'можно', 'нужно', 'скажите', 'сколько', 'какой',
+  'какая', 'какие', 'кто', 'где', 'когда', 'почему', 'минуту', 'пожалуйста',
+  'добрый', 'день', 'здравствуйте', 'удобно',
+])
+
+function significantTokens(text: string): string[] {
+  return normalize(text)
+    .split(' ')
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w))
+}
+
+function topicBoost(userClean: string, replyClean: string): number {
+  let boost = 0
+  for (const group of TOPIC_GROUPS) {
+    const inUser = group.some((t) => userClean.includes(t))
+    const inReply = group.some((t) => replyClean.includes(t))
+    if (inUser && inReply) boost += 6
+  }
+  return boost
+}
+
+function relevanceScore(userText: string, reply: string): number {
+  const userClean = normalize(userText)
+  const replyClean = normalize(reply)
+  const userTokens = significantTokens(userText)
+  if (userTokens.length === 0) return 0
+
+  let score = topicBoost(userClean, replyClean)
+  for (const token of userTokens) {
+    const stem = token.slice(0, Math.min(token.length, 6))
+    if (replyClean.includes(token)) score += 4
+    else if (stem.length >= 4 && replyClean.includes(stem)) score += 2
+  }
+  return score
+}
+
+/**
+ * Берём реплику по смыслу вопроса (топ по релевантности), не рандом из всего пула.
+ */
+function pickFreshReply(
+  pool: string[],
+  used: string[],
+  userText = '',
+): string {
   if (pool.length === 0) return '…'
   const usedSet = new Set(used)
   const fresh = pool.filter((r) => !usedSet.has(r))
@@ -102,9 +162,25 @@ function pickFreshReply(pool: string[], used: string[]): string {
   })
 
   const pool2 = diverse.length > 0 ? diverse : candidates
-  const shortish = pool2.filter((r) => r.length <= 110)
-  const preferred = shortish.length >= 3 ? shortish : pool2
-  return pickRandom(preferred)
+
+  if (!userText.trim()) {
+    const shortish = pool2.filter((r) => r.length <= 110)
+    return pickRandom(shortish.length >= 3 ? shortish : pool2)
+  }
+
+  const ranked = pool2
+    .map((reply) => ({ reply, score: relevanceScore(userText, reply) }))
+    .sort((a, b) => b.score - a.score)
+
+  const best = ranked[0]?.score ?? 0
+  if (best <= 0) {
+    // Нет пересечения — лучше короткая нейтральная из пула, чем «рандомная боль»
+    const shortish = pool2.filter((r) => r.length <= 90)
+    return pickRandom(shortish.length >= 2 ? shortish : pool2)
+  }
+
+  const top = ranked.filter((r) => r.score >= best - 2).slice(0, 5)
+  return pickRandom(top).reply
 }
 
 function pickReplyForClient(
@@ -112,13 +188,31 @@ function pickReplyForClient(
   basePool: string[],
   used: string[],
   clientId?: string,
+  userText = '',
 ): string {
   const personaPool = getPersonaPool(clientId, intentId)
-  // 90%: голос персоны — диалог ощущается «про клинику», не общий B2B
-  if (personaPool.length > 0 && Math.random() < 0.9) {
-    return pickFreshReply(personaPool, used)
+  const combined = [...personaPool, ...basePool]
+
+  // Сначала ищем релевантный ответ во всём доступном пуле
+  if (userText.trim() && combined.length > 0) {
+    const ranked = combined
+      .map((reply) => ({ reply, score: relevanceScore(userText, reply) }))
+      .sort((a, b) => b.score - a.score)
+    const best = ranked[0]
+    if (best && best.score >= 4) {
+      // При хорошем матче предпочитаем его (персона, если она в топе)
+      const top = ranked.filter((r) => r.score >= best.score - 2).slice(0, 6)
+      const personaHits = top.filter((t) => personaPool.includes(t.reply))
+      const pickFrom = personaHits.length > 0 && Math.random() < 0.85 ? personaHits : top
+      const chosen = pickRandom(pickFrom).reply
+      if (!used.includes(chosen)) return chosen
+    }
   }
-  return pickFreshReply([...personaPool, ...basePool], used)
+
+  if (personaPool.length > 0 && Math.random() < 0.9) {
+    return pickFreshReply(personaPool, used, userText)
+  }
+  return pickFreshReply(combined, used, userText)
 }
 
 function mapToLegacyIntent(id: string): Intent {
@@ -252,11 +346,16 @@ const PHRASE_RULES: Array<{ intentId: string; phrases: string[]; weight: number 
       'не перезванивает',
       'пропущенные звонки',
       'пустые окна',
+      'пустых окон',
       'повторные визиты',
       'откуда приходят',
       'как записываете',
       'сколько заявок',
       'какая конверсия',
+      'кто ведёт запись',
+      'кто ведет запись',
+      'на гигиену',
+      'обзвон',
     ],
   },
   {
@@ -589,6 +688,16 @@ export function detectIntentId(
     scores.delete('price_inquiry')
   }
 
+  // «Сколько заявок/окон» — не прайс
+  if (
+    /(заявок|окон|пациентов|звонков|лидов|визитов)/.test(clean) &&
+    !/(стоит|цена|тариф|бюджет|руб|стоим)/.test(clean)
+  ) {
+    scores.delete('price_inquiry')
+    const d = scores.get('need_discovery') ?? 0
+    scores.set('need_discovery', d + 8)
+  }
+
   // Closing vs doubt: «подумаем» не закрытие
   if ((scores.get('doubt_skepticism') ?? 0) >= 8) {
     const c = scores.get('closing') ?? 0
@@ -684,14 +793,20 @@ export function routeSmartReply(
     ]
     return {
       intent: 'confused',
-      reply: pickFreshReply(shortPool, used),
+      reply: pickFreshReply(shortPool, used, userText),
       nextStep: scriptStep,
       intentId: 'offtopic_confused',
     }
   }
 
   if (intent) {
-    const reply = pickReplyForClient(intent.id, intent.replies, used, clientId)
+    const reply = pickReplyForClient(
+      intent.id,
+      intent.replies,
+      used,
+      clientId,
+      userText,
+    )
     const legacy = mapToLegacyIntent(intent.id)
 
     let nextStep = scriptStep
@@ -733,6 +848,7 @@ export function routeSmartReply(
       dialogueBank.default_fallback,
       used,
       clientId,
+      userText,
     ),
     nextStep: scriptStep + (scriptStep < scenario.clientReplies.length ? 1 : 0),
     intentId: 'default_fallback',
