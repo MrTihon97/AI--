@@ -735,7 +735,22 @@ function priorManagerIntentIds(messages: { role: string; text: string }[]): stri
 function refineIntentWithMemory(
   intentId: string,
   priorIds: string[],
+  userText: string,
+  scriptStep: number,
 ): string {
+  const clean = normalize(userText)
+
+  // В начале диалога «удобно минуту / добрый день / про запись» — это контакт, не боль
+  if (
+    scriptStep <= 2 &&
+    /(удобно|минуту|есть время|добрый день|здравствуй|на связи)/.test(clean) &&
+    !/(теря|заявк|журнал|excel|гигиен|окн|сколько стоит|дорого|демо)/.test(
+      clean,
+    )
+  ) {
+    return 'greeting'
+  }
+
   const hadPrice = priorIds.some(
     (id) => id === 'price_inquiry' || id === 'price_objection',
   )
@@ -752,7 +767,6 @@ function refineIntentWithMemory(
     else break
   }
 
-  // 3+ шумных реплик подряд → клиент сворачивает разговор
   if (
     recentOfftopic >= 3 &&
     (intentId === 'offtopic_confused' ||
@@ -762,12 +776,177 @@ function refineIntentWithMemory(
     return 'timing_busy'
   }
 
-  // Цена уже была в прошлых репликах — повторный прайс → возражение / ценность
   if (hadPrice && intentId === 'price_inquiry') {
     return Math.random() < 0.55 ? 'price_objection' : 'value_challenge'
   }
 
+  // Длинная нормальная фраза не должна уходить в «не поняла»
+  if (
+    intentId === 'offtopic_confused' &&
+    clean.length >= 24 &&
+    significantTokens(userText).length >= 3
+  ) {
+    if (/(недозвон|дозванив|дозвон|перезвон|звонк)/.test(clean)) {
+      return 'need_discovery'
+    }
+    if (/(заявк|журнал|excel|гигиен|окн|запись|whatsapp)/.test(clean)) {
+      return 'need_discovery'
+    }
+    return 'default_fallback' as string // handled specially below - use need_discovery soft
+  }
+
   return intentId
+}
+
+/** Жёсткие ответы на типовые вопросы менеджера — приоритет над рандомом. */
+const QA_PATTERNS: Array<{
+  re: RegExp
+  intentId: string
+  marina: string[]
+  artem: string[]
+  generic: string[]
+}> = [
+  {
+    re: /демо|созвон|завтра|пилот|тестовый|зафиксир|11:00|слот|пришлю\s+в\s+whatsapp|в\s+ватсап/i,
+    intentId: 'closing',
+    marina: [
+      'Ок. Пришлите в WhatsApp «демо ДентаCRM» — отвечу после приёмов.',
+      'Давайте. Слот завтра после обеда, 15 минут, без слайдов.',
+    ],
+    artem: [
+      'Присылайте КП и слот. С партнёром согласую на этой неделе.',
+      'Ок, демо с партнёром. Пришлите календарь.',
+    ],
+    generic: ['Хорошо, давайте демо. Пришлите время и ссылку.'],
+  },
+  {
+    re: /сколько\s*стоит|какая\s*цена|прайс|тариф|9900|девять\s*девять|подписка\s+от/i,
+    intentId: 'price_inquiry',
+    marina: [
+      'Так, а сколько это в месяц за нашу клинику на два кресла?',
+      'Назовите цифру целиком — что входит и сколько платить каждый месяц.',
+    ],
+    artem: [
+      'Цена за четыре филиала? И есть ли опт за год?',
+      'Вилка бюджета: от и до. Без «зависит».',
+    ],
+    generic: ['Озвучьте стоимость, чтобы понять, есть ли смысл продолжать.'],
+  },
+  {
+    re: /дорого|не\s*потян|скидк|кусается/i,
+    intentId: 'price_objection',
+    marina: [
+      'Дорого для клиники на два кресла. Нужен пилот или понятный расчёт потерь.',
+      'Цена кусается. Покажите, где эти деньги вернутся.',
+    ],
+    artem: [
+      'Дорого относительно рынка. Нужен ROI по филиалам.',
+      'Без скидки на сеть даже КП не понесу на согласование.',
+    ],
+    generic: ['Дороговато. Нужно обоснование или спецусловия.'],
+  },
+  {
+    re: /удобно|минуту|есть\s*время|не\s*отвлекаю/i,
+    intentId: 'greeting',
+    marina: [
+      'Да, слушаю. Только коротко — пациент скоро.',
+      'Минута есть. Давайте по делу.',
+      'Говорите. Если про запись пациентов — я тут.',
+    ],
+    artem: [
+      'Слушаю. Две минуты — и к сути.',
+      'Да, удобно. Сразу дифференциатор, без воды.',
+    ],
+    generic: ['Да, слушаю. Давайте коротко.'],
+  },
+  {
+    re: /журнал|excel|эксель|(ведёт|ведет)\s*запись|чем\s*вед|запис.*(whatsapp|ватсап|журнал)|whatsapp.*запис/i,
+    intentId: 'need_discovery',
+    marina: [
+      'Запись в журнале, плюс WhatsApp у Ирины на телефоне. Excel тоже есть, но кривой.',
+      'В основном бумажный журнал. WhatsApp — отдельно, иногда теряется.',
+    ],
+    artem: [
+      'По филиалам по-разному: где-то 1С, где-то Excel. Единого контура нет.',
+      'Запись размазана: телефония, таблицы, местами мессенджеры.',
+    ],
+    generic: ['Ведем в журнале и мессенджерах. Единой системы нет.'],
+  },
+  {
+    re: /теря|заявк|не\s*перезвон|висят|лид|instagram|инстаграм/i,
+    intentId: 'need_discovery',
+    marina: [
+      'Да, бывает — заявки из WhatsApp висят до вечера, Ирина не всегда перезванивает.',
+      'Потери есть. Особенно вечером и из мессенджеров.',
+    ],
+    artem: [
+      'Лиды на местах сливаются — без статусов и контроля не доказать.',
+      'Да, пропущенные обращения по филиалам — главная боль.',
+    ],
+    generic: ['Да, заявки иногда теряются. Это больно.'],
+  },
+  {
+    re: /недозвон|не\s*дозванив|не\s*дозвон|дозванива|не\s*доходят\s*звон/i,
+    intentId: 'need_discovery',
+    marina: [
+      'Точную цифру не считала, но недозвоны каждую неделю есть — особенно в час пик.',
+      'Бывает, что не дозваниваемся. Сколько раз — не веду учёт, вот в чём проблема.',
+    ],
+    artem: [
+      'Конверсию звонок→запись не видим. Недозвоны точно есть, цифры нет.',
+      'По сети это не меряем нормально — только жалобы управляющих.',
+    ],
+    generic: [
+      'Недозвоны бывают. Точной статистики нет — руками не успеваем считать.',
+    ],
+  },
+  {
+    re: /гигиен|повторн|обзвон|возвращ/i,
+    intentId: 'need_discovery',
+    marina: [
+      'На гигиену сами почти не возвращаются. Обзвон руками — никто не любит.',
+      'Повторные визиты — слабое место. Напоминания шлём вручную, когда вспомним.',
+    ],
+    artem: [
+      'Повторные визиты по филиалам не контролируем системно.',
+      'Обзвон на местах хаотичный. Нужны автонапоминания и статусы.',
+    ],
+    generic: ['Повторные визиты проседают. Обзвон руками не тянем.'],
+  },
+  {
+    re: /пуст.*окон|окон.*недел|свободн.*окн|дырк.*в\s*расписан/i,
+    intentId: 'need_discovery',
+    marina: [
+      'Пустых окон после обеда хватает. Точную цифру в неделю не считала.',
+      'Окна в 14:00 пустые, вечером очередь. Баланса нет.',
+    ],
+    artem: [
+      'Пустые окна есть на всех точках, но единой картины по сети нет.',
+      'Загрузка плавает. Без дашборда это ощущения, не цифры.',
+    ],
+    generic: ['Пустые окна бывают. Считаем примерно, не системно.'],
+  },
+]
+
+function pickQaReply(
+  userText: string,
+  clientId: string | undefined,
+  used: string[],
+): { reply: string; intentId: string } | null {
+  for (const pattern of QA_PATTERNS) {
+    if (!pattern.re.test(userText)) continue
+    const pool =
+      clientId === 'marina'
+        ? pattern.marina
+        : clientId === 'artem'
+          ? pattern.artem
+          : pattern.generic
+    return {
+      intentId: pattern.intentId,
+      reply: pickFreshReply(pool, used, userText),
+    }
+  }
+  return null
 }
 
 export function routeSmartReply(
@@ -780,11 +959,39 @@ export function routeSmartReply(
 ): SmartReplyResult {
   const used = historyClientReplies.slice(-20)
   const priorIds = priorManagerIntentIds(historyMessages)
+  const clean = normalize(userText)
+
+  // 1) Сначала жёсткий Q&A — чтобы не было «боли наугад»
+  const qa = pickQaReply(userText, clientId, used)
+  if (qa) {
+    let nextStep = scriptStep
+    if (qa.intentId === 'closing') nextStep = scenario.clientReplies.length
+    else if (qa.intentId === 'greeting') nextStep = Math.max(scriptStep, 1)
+    else if (qa.intentId === 'need_discovery') {
+      nextStep = Math.min(scriptStep + 1, Math.max(scenario.clientReplies.length, scriptStep + 1))
+    }
+    return {
+      intent: mapToLegacyIntent(qa.intentId),
+      reply: qa.reply,
+      nextStep,
+      intentId: qa.intentId,
+    }
+  }
+
   let { intentId } = detectIntentId(userText, scriptStep)
-  intentId = refineIntentWithMemory(intentId, priorIds)
+  intentId = refineIntentWithMemory(intentId, priorIds, userText, scriptStep)
+  if (intentId === 'default_fallback') intentId = 'need_discovery'
+
+  // Длинный осмысленный текст почти никогда не «offtopic»
+  if (
+    intentId === 'offtopic_confused' &&
+    clean.length >= 20 &&
+    significantTokens(userText).length >= 2
+  ) {
+    intentId = 'need_discovery'
+  }
 
   const intent = getIntentById(intentId)
-  const clean = normalize(userText)
 
   if (clean.length < 4 && intentId === 'offtopic_confused') {
     const shortPool = [
@@ -829,10 +1036,8 @@ export function routeSmartReply(
     }
   }
 
-  const useScriptLine =
-    scriptStep < scenario.clientReplies.length && Math.random() > 0.72
-
-  if (useScriptLine) {
+  // Fallback: следующая реплика сценария — связнее, чем random bank
+  if (scriptStep < scenario.clientReplies.length) {
     return {
       intent: 'unknown',
       reply: scenario.clientReplies[scriptStep]!,
@@ -850,7 +1055,7 @@ export function routeSmartReply(
       clientId,
       userText,
     ),
-    nextStep: scriptStep + (scriptStep < scenario.clientReplies.length ? 1 : 0),
+    nextStep: scriptStep,
     intentId: 'default_fallback',
   }
 }
