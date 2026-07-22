@@ -183,6 +183,30 @@ function pickFreshReply(
   return pickRandom(top).reply
 }
 
+function isAggression(text: string): boolean {
+  const clean = normalize(text)
+  return /(мудак|идиот|дурак|тупой|чмо|гандон|сука|блять|бля |пизд|хуй|хуе|ебл|ахуе|охуе|пошел\s+в|пошёл\s+в|заткни|нахуй|нахер|пошел\s+на|пошёл\s+на|какого\s+черт|достал|отстань|не\s+звони)/i.test(
+    clean,
+  )
+}
+
+const AGGRESSION_REPLIES: Record<string, string[]> = {
+  marina: [
+    'Так разговаривать не будем. Либо по делу — либо кладу трубку.',
+    'Хамство не слушаю. Если есть нормальный вопрос по записи пациентов — говорите.',
+    'Я на работе. Без оскорблений, иначе до свидания.',
+  ],
+  artem: [
+    'Так разговаривать не будем. Либо КП и суть по сети — либо конец звонка.',
+    'Хамство мимо. Если есть деловое предложение для Дент-Альянс — одно предложение.',
+    'Я кладу трубку при таком тоне. Вернётесь по делу — поговорим.',
+  ],
+  generic: [
+    'Давайте без грубости. Либо по делу, либо до свидания.',
+    'Оскорбления не аргумент. Есть предложение — формулируйте коротко.',
+  ],
+}
+
 function pickReplyForClient(
   intentId: string,
   basePool: string[],
@@ -191,28 +215,35 @@ function pickReplyForClient(
   userText = '',
 ): string {
   const personaPool = getPersonaPool(clientId, intentId)
+  // Качество важнее объёма: сначала персона, банк — только если релевантность высокая
   const combined = [...personaPool, ...basePool]
 
-  // Сначала ищем релевантный ответ во всём доступном пуле
   if (userText.trim() && combined.length > 0) {
     const ranked = combined
       .map((reply) => ({ reply, score: relevanceScore(userText, reply) }))
       .sort((a, b) => b.score - a.score)
     const best = ranked[0]
+
     if (best && best.score >= 4) {
-      // При хорошем матче предпочитаем его (персона, если она в топе)
-      const top = ranked.filter((r) => r.score >= best.score - 2).slice(0, 6)
+      const top = ranked.filter((r) => r.score >= best.score - 2).slice(0, 5)
       const personaHits = top.filter((t) => personaPool.includes(t.reply))
-      const pickFrom = personaHits.length > 0 && Math.random() < 0.85 ? personaHits : top
+      const pickFrom =
+        personaHits.length > 0 ? personaHits : top.slice(0, 3)
       const chosen = pickRandom(pickFrom).reply
       if (!used.includes(chosen)) return chosen
     }
+
+    // Низкая релевантность → НЕ лезем в огромный банк, только персона / короткий fallback
+    if (personaPool.length > 0) {
+      return pickFreshReply(personaPool, used, userText)
+    }
   }
 
-  if (personaPool.length > 0 && Math.random() < 0.9) {
+  if (personaPool.length > 0) {
     return pickFreshReply(personaPool, used, userText)
   }
-  return pickFreshReply(combined, used, userText)
+  // Банк — последний резерв, и только топ по релевантности
+  return pickFreshReply(basePool, used, userText)
 }
 
 function mapToLegacyIntent(id: string): Intent {
@@ -481,20 +512,25 @@ const PHRASE_RULES: Array<{ intentId: string; phrases: string[]; weight: number 
       'совещание',
     ],
   },
-  {
-    intentId: 'aggression_pushback',
-    weight: 12,
-    phrases: [
-      'не звоните',
-      'отстаньте',
-      'достали',
-      'это спам',
-      'развод',
-      'кидалово',
-      'бред',
-      'ерунда',
-    ],
-  },
+    {
+      intentId: 'aggression_pushback',
+      weight: 14,
+      phrases: [
+        'не звоните',
+        'отстаньте',
+        'достали',
+        'это спам',
+        'развод',
+        'кидалово',
+        'бред',
+        'ерунда',
+        'пошел в',
+        'пошёл в',
+        'ахуел',
+        'охуел',
+        'мудак',
+      ],
+    },
   {
     intentId: 'smalltalk_redirect',
     weight: 8,
@@ -926,6 +962,45 @@ const QA_PATTERNS: Array<{
     ],
     generic: ['Пустые окна бывают. Считаем примерно, не системно.'],
   },
+  {
+    re: /1с|медодс|манго|битрикс|чем\s+вы\s+лучше|конкурент|уже\s+есть\s+crm|сидим\s+на/i,
+    intentId: 'trust_competitors',
+    marina: [
+      'Мы на журнале и Excel. Менять страшно — уже обжигались.',
+      'Чем вы лучше того, что нам уже предлагали весной?',
+    ],
+    artem: [
+      'У нас 1С и Манго. Переезд ради переезда неинтересен — в чём дифференциатор?',
+      'Сравниваем с Медодс. Чем кардинально лучше для сети из 4 клиник?',
+    ],
+    generic: ['У нас уже есть система. Чем вы лучше?'],
+  },
+  {
+    re: /партн[её]р|без\s+партн|лпр|собственник|я\s+не\s+решаю|руководств/i,
+    intentId: 'authority_gate',
+    marina: [
+      'Без Ирины и без цифр потерь я сама ничего не внедрю.',
+      'Финальное слово не только за мной. Нужны короткие материалы.',
+    ],
+    artem: [
+      'Без партнёра на демо дальше не двигаемся. Пришлите one-pager для совета.',
+      'Я собираю shortlist. Решение не только моё — нужен партнёр на линии.',
+    ],
+    generic: ['Я не единственный ЛПР. Нужны материалы для согласования.'],
+  },
+  {
+    re: /live|лайв|отч[её]т|дашборд|конверси|филиал/i,
+    intentId: 'need_discovery',
+    marina: [
+      'Нормальной аналитики нет — решения больше по ощущениям.',
+      'Хотелось бы видеть потери заявок в цифрах, а не на глаз.',
+    ],
+    artem: [
+      'Отчёты по филиалам собираем руками раз в месяц. Live-дашборда нет.',
+      'Конверсию звонок→запись по точкам не видим. Это must-have.',
+    ],
+    generic: ['С аналитикой сейчас слабо. Нужны понятные цифры.'],
+  },
 ]
 
 function pickQaReply(
@@ -960,6 +1035,18 @@ export function routeSmartReply(
   const used = historyClientReplies.slice(-20)
   const priorIds = priorManagerIntentIds(historyMessages)
   const clean = normalize(userText)
+
+  // 0) Хамство / мат — всегда первым, иначе банк выдаёт бред
+  if (isAggression(userText)) {
+    const pool =
+      AGGRESSION_REPLIES[clientId ?? ''] ?? AGGRESSION_REPLIES.generic
+    return {
+      intent: 'confused',
+      reply: pickFreshReply(pool, used, userText),
+      nextStep: scriptStep,
+      intentId: 'aggression_pushback',
+    }
+  }
 
   // 1) Сначала жёсткий Q&A — чтобы не было «боли наугад»
   const qa = pickQaReply(userText, clientId, used)
