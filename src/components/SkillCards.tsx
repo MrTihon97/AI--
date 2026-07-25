@@ -62,7 +62,7 @@ export function SkillCards({ stages }: Props) {
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
         {stages.map((stage, i) => {
           const zone = getZone(stage.score)
           const pct = Math.min(100, (stage.score / 10) * 100)

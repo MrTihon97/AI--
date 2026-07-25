@@ -20,6 +20,16 @@ html,
 body,
 #root {
   min-height: 100%;
+  min-height: 100dvh;
+}
+
+/* Чат: на desktop ограничиваем высоту; на mobile высоту задаёт JS (visualViewport) */
+@media (min-width: 768px) {
+  .chat-shell {
+    height: calc(100dvh - 5.5rem) !important;
+    max-height: calc(100dvh - 5.5rem) !important;
+    top: auto !important;
+  }
 }
 
 body {

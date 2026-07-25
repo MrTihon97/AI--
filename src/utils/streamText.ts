@@ -1,8 +1,31 @@
 import { delay } from './zones'
+import { isDevelopedArgument } from '../services/intentMatcher'
 
-/** Задержка «печатает…» пропорционально длине ответа. */
-export function typingDelayFor(text: string): number {
-  return Math.min(2600, Math.max(1100, 700 + text.length * 22))
+/**
+ * Задержка «печатает…».
+ * Предпочтительно использовать typingDelayMs с бэка (beat timing);
+ * эта функция — fallback, если движок не вернул delay.
+ */
+export function typingDelayFor(
+  replyText: string,
+  userText = '',
+  overrideMs?: number,
+): number {
+  if (typeof overrideMs === 'number' && overrideMs > 0) {
+    return overrideMs
+  }
+
+  const base = Math.min(2600, Math.max(1000, 700 + replyText.length * 22))
+
+  if (userText && isDevelopedArgument(userText)) {
+    const reading = Math.min(
+      3000,
+      Math.max(2500, 1900 + userText.trim().length * 3),
+    )
+    return Math.max(base, reading)
+  }
+
+  return base
 }
 
 type StreamOpts = {

@@ -1,4 +1,5 @@
-import { ChevronRight, Star } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ChevronRight, Play, Sparkles, Star } from 'lucide-react'
 import type { RoleplayHistoryItem } from '../types'
 import {
   formatDate,
@@ -30,12 +31,36 @@ export function RoleplayHistoryList({ history, onOpen }: Props) {
           История ролёвок
         </h2>
         <p className="text-xs text-slate-500">
-          Нажмите запись, чтобы открыть разбор
+          {history.length === 0
+            ? 'Здесь появится динамика ваших тренировок'
+            : 'Нажмите запись, чтобы открыть разбор'}
         </p>
       </div>
 
       {history.length === 0 ? (
-        <p className="text-sm text-slate-400">Пока нет завершённых ролёвок</p>
+        <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-gradient-to-br from-blue-50 via-sky-50 to-white p-5 ring-1 ring-blue-100">
+          <div
+            className="pointer-events-none absolute -right-6 -top-6 h-28 w-28 rounded-full bg-blue-400/20 blur-2xl"
+            aria-hidden
+          />
+          <div className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-brand shadow-[0_8px_20px_rgba(59,130,246,0.25)] ring-1 ring-blue-100">
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <p className="font-display relative mt-4 text-base font-bold tracking-tight text-slate-900">
+            Сделайте первую ролёвку для получения аналитики
+          </p>
+          <p className="relative mt-2 text-sm leading-relaxed text-slate-600">
+            После диалога здесь появятся оценки, график динамики и разборы с
+            вашими цитатами.
+          </p>
+          <Link
+            to="/roleplay"
+            className="btn-glow relative mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-bold sm:w-auto"
+          >
+            <Play className="h-4 w-4 fill-white" />
+            Начать первую ролёвку
+          </Link>
+        </div>
       ) : (
         <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
           {history.map((item, index) => {

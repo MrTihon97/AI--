@@ -3,45 +3,96 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import confetti from 'canvas-confetti'
 import {
   AlertCircle,
-  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
-  Lightbulb,
+  ClipboardList,
+  Home,
   Loader2,
   Quote,
-  Trophy,
+  RefreshCw,
+  Target,
+  XCircle,
 } from 'lucide-react'
 import { saveRoleplayResult } from '../services/api'
-import type { ChatMessage, FeedbackMistake, FeedbackSession } from '../types'
-import {
-  getZone,
-  zoneBadgeClass,
-  zoneBarClass,
-  zoneResultLabel,
-} from '../utils/zones'
+import type {
+  ChatMessage,
+  FeedbackMistake,
+  FeedbackSession,
+  FeedbackSuccess,
+  Zone,
+} from '../types'
+import { FeedbackSkeleton } from '../components/Skeleton'
+import { AppNav } from '../components/AppNav'
+import { STAGE_LABELS } from '../services/feedbackEngine'
+import { defaultBetterScriptForStage } from '../utils/reportValidator'
 
 const FEEDBACK_STORAGE_KEY = 'ai-trenazher-last-feedback'
 
 const STAGE_NAMES: Record<string, string> = {
-  contact: 'Установление контакта',
-  discovery: 'Выявление потребностей',
-  presentation: 'Презентация',
-  objections: 'Работа с возражениями',
-  closing: 'Завершение сделки',
-}
-
-const MISTAKE_LEAD: Record<string, string> = {
-  contact: 'Слабый вход в контакт. Ваша реплика:',
-  discovery: 'Вы ушли от выявления потребностей на фразе:',
-  presentation: 'Презентация без привязки к боли. Вы сказали:',
-  objections: 'Возражение обработано слабо. Ваш ответ:',
-  closing: 'Закрытие без следующего шага. Вы сказали:',
+  contact: STAGE_LABELS.contact,
+  discovery: STAGE_LABELS.discovery,
+  presentation: STAGE_LABELS.presentation,
+  objections: STAGE_LABELS.objections,
+  closing: STAGE_LABELS.closing,
 }
 
 type LocationState = FeedbackSession & {
   messages?: ChatMessage[]
   fromHistory?: boolean
   persisted?: boolean
+  /** Уникальный id завершения — чтобы не схлопнуть две похожие ролёвки */
+  sessionId?: string
+}
+
+type QuoteRow =
+  | { kind: 'error'; item: FeedbackMistake; index: number }
+  | { kind: 'success'; item: FeedbackSuccess; index: number }
+
+/** Светофор отчёта: 1–4 красный, 5–7 жёлтый, 8–10 зелёный */
+function getReportZone(score: number): Zone {
+  if (score <= 4) return 'red'
+  if (score <= 7) return 'yellow'
+  return 'green'
+}
+
+function reportBarClass(zone: Zone): string {
+  switch (zone) {
+    case 'red':
+      return 'bg-rose-500'
+    case 'yellow':
+      return 'bg-amber-400'
+    case 'green':
+      return 'bg-emerald-500'
+  }
+}
+
+function reportBadgeClass(zone: Zone): string {
+  switch (zone) {
+    case 'red':
+      return 'bg-rose-50 text-rose-700 ring-rose-200'
+    case 'yellow':
+      return 'bg-amber-50 text-amber-700 ring-amber-200'
+    case 'green':
+      return 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+  }
+}
+
+function reportCardRing(zone: Zone): string {
+  switch (zone) {
+    case 'red':
+      return 'ring-rose-200/80'
+    case 'yellow':
+      return 'ring-amber-200/80'
+    case 'green':
+      return 'ring-emerald-200/80'
+  }
+}
+
+function firstSentence(text: string): string {
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (!t) return '—'
+  const m = t.match(/^(.+?[.!?…])(\s|$)/)
+  return m?.[1] ?? t
 }
 
 function isFeedbackState(value: unknown): value is LocationState {
@@ -71,10 +122,13 @@ function writeStoredSession(session: LocationState): void {
 }
 
 function sessionFingerprint(session: LocationState): string {
-  const quotes = (session.managerMessages ?? [])
-    .join('|')
-    .slice(0, 120)
-  return `${session.clientId}:${session.feedback.totalScore}:${quotes}`
+  // sessionId — главный ключ (каждая завершённая ролёвка уникальна)
+  if (session.sessionId) return `sid:${session.sessionId}`
+  const msgs = session.managerMessages ?? []
+  const quotes = msgs.join('|')
+  // Legacy fallback: клиент + балл + длина + хвост цитат (не только первые 120)
+  const tail = quotes.slice(-80)
+  return `${session.clientId}:${session.feedback.totalScore}:${msgs.length}:${quotes.length}:${tail}`
 }
 
 const inFlightSaves = new Set<string>()
@@ -108,16 +162,6 @@ function fireSalute() {
   }, 220)
 }
 
-function withLeads(
-  mistakes: FeedbackMistake[],
-): Array<FeedbackMistake & { lead: string }> {
-  return mistakes.map((mistake) => ({
-    ...mistake,
-    managerQuote: mistake.managerQuote?.trim() || '—',
-    lead: MISTAKE_LEAD[mistake.stageId] ?? 'Ваша реплика в диалоге:',
-  }))
-}
-
 export function Feedback() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -147,9 +191,17 @@ export function Feedback() {
     )
   }, [session])
 
-  const enrichedMistakes = useMemo(() => {
+  const quoteRows = useMemo((): QuoteRow[] => {
     if (!session) return []
-    return withLeads(session.feedback.mistakes)
+    const errors: QuoteRow[] = session.feedback.mistakes.map((item, index) => ({
+      kind: 'error',
+      item,
+      index,
+    }))
+    const wins: QuoteRow[] = (session.feedback.successes ?? []).map(
+      (item, index) => ({ kind: 'success', item, index }),
+    )
+    return [...errors, ...wins]
   }, [session])
 
   useEffect(() => {
@@ -169,7 +221,16 @@ export function Feedback() {
 
   useEffect(() => {
     if (analyzing || !session || session.fromHistory) return
-    if (session.feedback.totalScore < 6) return
+    // Салют только при успешном зачёте (≥7 / verdict=passed).
+    // Пересдача, этика, оффтоп — без confetti и без похвалы.
+    const passed =
+      session.feedback.verdict === 'passed' ||
+      (session.feedback.verdict == null &&
+        session.feedback.totalScore >= 7 &&
+        !session.feedback.etiquetteViolation &&
+        !session.feedback.offTopicViolation &&
+        session.feedback.failReason == null)
+    if (!passed) return
     if (sessionStorage.getItem(saluteFlagKey)) return
     sessionStorage.setItem(saluteFlagKey, '1')
     fireSalute()
@@ -220,33 +281,55 @@ export function Feedback() {
 
   if (!session) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-20 text-center">
-        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
-          <AlertCircle className="h-6 w-6" />
+      <>
+        <AppNav />
+        <div className="mx-auto flex max-w-md flex-col items-center px-4 py-20 text-center">
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
+            <AlertCircle className="h-6 w-6" />
+          </div>
+          <p className="font-display font-semibold text-slate-900">
+            Нет данных разбора
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            Сначала пройдите ролёвку — отчёт появится автоматически.
+          </p>
+          <Link
+            to="/roleplay"
+            className="btn-glow mt-5 rounded-full px-5 py-2.5 text-sm font-semibold"
+          >
+            К выбору клиента
+          </Link>
         </div>
-        <p className="font-display font-semibold text-slate-900">
-          Нет данных разбора
-        </p>
-        <p className="mt-1 text-sm text-slate-500">
-          Сначала пройдите ролёвку — разбор появится автоматически.
-        </p>
-        <Link
-          to="/roleplay"
-          className="btn-glow mt-5 rounded-full px-5 py-2.5 text-sm font-semibold"
-        >
-          К выбору клиента
-        </Link>
-      </div>
+      </>
     )
   }
 
   const { feedback, clientName } = session
   const fromHistory = Boolean(session.fromHistory)
-  const totalZone = getZone(feedback.totalScore)
-  const recommendations = feedback.recommendations.slice(0, 3)
+  const verdict =
+    feedback.verdict ?? (feedback.totalScore >= 7 ? 'passed' : 'retake')
+  const verdictLabel =
+    feedback.verdictLabel ??
+    (verdict === 'passed' ? 'Пройдено' : 'Требуется пересдача')
+  const toxicityFail =
+    feedback.failReason === 'toxicity_limit_exceeded' ||
+    feedback.failReason === 'terminated_etiquette' ||
+    feedback.failReason === 'terminated_offtopic' ||
+    feedback.etiquetteViolation === true ||
+    feedback.offTopicViolation === true
+  const growthPoints = [
+    feedback.mainRecommendation,
+    ...feedback.recommendations.filter((r) => r !== feedback.mainRecommendation),
+  ]
+    .filter(Boolean)
+    .slice(0, 3) as string[]
 
   const goHome = () => {
     navigate('/', { replace: true })
+  }
+
+  const retryRoleplay = () => {
+    navigate('/roleplay')
   }
 
   const retrySave = async () => {
@@ -282,212 +365,416 @@ export function Feedback() {
 
   if (analyzing) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center px-4 py-24 text-center">
-        <div className="relative">
-          <div className="absolute inset-0 animate-ping rounded-full bg-blue-400/30" />
-          <Loader2 className="relative h-10 w-10 animate-spin text-brand" />
+      <>
+        <AppNav />
+        <div>
+          <div className="mx-auto max-w-3xl px-4 pt-6">
+            <p className="mb-4 text-center text-sm font-medium text-slate-500">
+              Формируем квалификационный отчёт…
+            </p>
+          </div>
+          <FeedbackSkeleton />
         </div>
-        <p className="font-display mt-4 text-base font-semibold text-slate-900">
-          ИИ анализирует диалог…
-        </p>
-        <p className="mt-1 text-sm text-slate-500">
-          Сверяем ваши реплики с эталоном по 5 этапам продаж
-        </p>
-      </div>
+      </>
     )
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 px-4 py-8 pb-10">
-      <button
-        type="button"
-        onClick={goHome}
-        className="animate-fade-in inline-flex items-center gap-1.5 text-sm text-slate-500 transition hover:text-brand"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        На главную
-      </button>
-
-      <header className="soft-card animate-fade-up relative overflow-hidden rounded-[22px] p-6 sm:p-8">
-        <div
-          className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-blue-400/15 blur-3xl"
-          aria-hidden
-        />
-        <div className="relative">
-          <p className="flex items-center gap-2 text-sm font-medium text-brand">
-            <Trophy className="h-4 w-4" />
-            {fromHistory ? 'Разбор из истории' : 'Разбор ролёвки'}
-          </p>
-          <h1 className="font-display mt-2 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-            Диалог с {clientName}
-          </h1>
-
-          <div className="mt-6 flex flex-wrap items-end gap-4">
-            <p className="font-display text-6xl font-black tabular-nums tracking-tight text-brand sm:text-7xl">
-              {feedback.totalScore.toFixed(1)}
-              <span className="text-2xl font-semibold text-slate-300 sm:text-3xl">
-                {' '}
-                / 10
+    <>
+      <AppNav />
+      <div className="mx-auto max-w-3xl space-y-5 px-4 py-6 pb-12 md:py-8">
+        {/* —— 1. Шапка отчёта —— */}
+        <header className="soft-card animate-fade-up overflow-hidden rounded-[22px] border border-slate-200/80">
+          <div
+            className={`px-5 py-3 sm:px-6 ${
+              verdict === 'passed'
+                ? 'bg-emerald-600 text-white'
+                : 'bg-rose-600 text-white'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-bold uppercase tracking-[0.14em] opacity-90">
+                Отчёт о квалификации менеджера
+              </p>
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide backdrop-blur-sm">
+                {verdict === 'passed' ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5" />
+                )}
+                {verdictLabel}
               </span>
-            </p>
-            <span
-              className={`mb-2 rounded-full px-3 py-1 text-xs font-bold tracking-wide ring-1 ${zoneBadgeClass(totalZone)}`}
-            >
-              {zoneResultLabel(totalZone)}
-            </span>
+            </div>
           </div>
 
-          {!fromHistory && (
-            <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-500">
-              {saving ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
-                  Сохраняем прогресс…
-                </>
-              ) : saveError ? (
-                <span className="text-rose-600">{saveError}</span>
-              ) : saved ? (
-                <>
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                  Прогресс сохранён · стрик и история обновлены
-                </>
-              ) : null}
+          <div className="px-5 py-5 sm:px-6 sm:py-6">
+            <p className="text-xs font-medium text-slate-500">
+              {fromHistory ? 'Архивный разбор' : 'Сессия только что завершена'} ·{' '}
+              {clientName}
             </p>
-          )}
 
-          {session.insights && session.insights.length > 0 && (
-            <ul className="mt-5 flex flex-wrap gap-2">
-              {session.insights.map((insight) => (
-                <li
-                  key={insight.id}
-                  className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-medium text-blue-700 ring-1 ring-blue-100"
+            <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Общий балл
+                </p>
+                <p className="font-display mt-1 text-5xl font-black tabular-nums tracking-tight text-slate-900 sm:text-6xl">
+                  {feedback.totalScore.toFixed(1)}
+                  <span className="text-2xl font-semibold text-slate-300">
+                    {' '}
+                    / 10
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Порог зачёта: 7.0 · светофор этапов: 1–4 / 5–7 / 8–10
+                </p>
+              </div>
+
+              <div
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-black uppercase tracking-wide ring-2 ${
+                  verdict === 'passed'
+                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-300'
+                    : 'bg-rose-50 text-rose-700 ring-rose-300'
+                }`}
+              >
+                {verdict === 'passed' ? (
+                  <CheckCircle2 className="h-5 w-5" />
+                ) : (
+                  <XCircle className="h-5 w-5" />
+                )}
+                {verdict === 'passed' ? 'Пройдено' : verdictLabel}
+              </div>
+            </div>
+
+            {toxicityFail ? (
+              <div
+                className="mt-5 flex gap-3 rounded-2xl bg-rose-50 px-4 py-3.5 ring-2 ring-rose-300"
+                role="alert"
+              >
+                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600" />
+                <div>
+                  <p className="text-sm font-bold text-rose-900">
+                    КРИТИЧЕСКАЯ ОШИБКА • Деловая этика
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-rose-800">
+                    Использование ненормативной лексики и оскорблений (2+
+                    нарушения). Сессия прервана автоматически. Итоговый балл —{' '}
+                    {feedback.totalScore.toFixed(1)} / 10. Статус:{' '}
+                    {verdictLabel || 'ТРЕБУЕТСЯ ПЕРЕСДАЧА'}.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex flex-col gap-2.5 sm:flex-row">
+              <button
+                type="button"
+                onClick={retryRoleplay}
+                className="btn-glow inline-flex flex-1 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-bold"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Пройти повторно
+              </button>
+              <button
+                type="button"
+                onClick={goHome}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-bold text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-50"
+              >
+                <Home className="h-4 w-4" />
+                Вернуться на Дашборд
+              </button>
+            </div>
+
+            {!fromHistory && (
+              <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-500">
+                {saving ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
+                    Сохраняем в историю…
+                  </>
+                ) : saveError ? (
+                  <button
+                    type="button"
+                    onClick={() => void retrySave()}
+                    className="font-medium text-rose-600 underline-offset-2 hover:underline"
+                  >
+                    {saveError} · повторить сохранение
+                  </button>
+                ) : saved ? (
+                  <>
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                    Зафиксировано в прогрессе
+                  </>
+                ) : null}
+              </p>
+            )}
+          </div>
+        </header>
+
+        {/* —— 2. Светофор этапов —— */}
+        <section className="animate-fade-up stagger-1">
+          <div className="mb-3 flex items-center gap-2">
+            <ClipboardList className="h-4 w-4 text-slate-400" />
+            <h2 className="font-display text-base font-semibold text-slate-900">
+              Этапы продаж
+            </h2>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {feedback.stageScores.map((item) => {
+              const zone = getReportZone(item.score)
+              const pct = Math.min(100, (item.score / 10) * 100)
+              return (
+                <article
+                  key={item.stageId}
+                  className={`soft-card rounded-[18px] p-4 ring-1 ${reportCardRing(zone)}`}
                 >
-                  {insight.label}
-                </li>
-              ))}
+                  <div className="mb-2.5 flex items-start justify-between gap-2">
+                    <h3 className="text-sm font-semibold leading-snug text-slate-800">
+                      {stageMap.get(item.stageId) ?? item.stageId}
+                    </h3>
+                    <span
+                      className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-bold tabular-nums ring-1 ${reportBadgeClass(zone)}`}
+                    >
+                      {item.score.toFixed(1)}
+                    </span>
+                  </div>
+                  <div className="mb-2.5 h-2 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${reportBarClass(zone)}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="text-xs leading-relaxed text-slate-600">
+                    {firstSentence(item.comment)}
+                  </p>
+                </article>
+              )
+            })}
+          </div>
+        </section>
+
+        {/* —— 3. Разбор реальных цитат —— */}
+        <section className="soft-card animate-fade-up stagger-2 rounded-[22px] p-5 sm:p-6">
+          <div className="mb-1 flex items-center gap-2">
+            <Quote className="h-4 w-4 text-slate-400" />
+            <h2 className="font-display text-base font-semibold text-slate-900">
+              Разбор реальных цитат
+            </h2>
+          </div>
+          <p className="mb-5 text-xs text-slate-500">
+            Фактура из вашего чата — без шаблонных формулировок
+          </p>
+
+          {quoteRows.length === 0 ? (
+            <p className="text-sm text-slate-500">Цитат для разбора нет.</p>
+          ) : (
+            <ul className="space-y-3">
+              {quoteRows.map((row) =>
+                row.kind === 'error' ? (
+                  <li
+                    key={`err-${row.index}`}
+                    className={`overflow-hidden rounded-2xl border bg-white ${
+                      row.item.tag === 'etiquette_violation' ||
+                      row.item.tag === 'offtopic_violation' ||
+                      /ненорматив|хамств|деловой этик|2\+\s*нарушен|off-topic|вне темы|предметн/i.test(
+                        row.item.comment,
+                      )
+                        ? 'border-rose-300 ring-1 ring-rose-200'
+                        : 'border-rose-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2 border-b border-rose-100 bg-rose-50/80 px-3.5 py-2">
+                      <span className="rounded-md bg-rose-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
+                        {row.item.tag === 'etiquette_violation' ||
+                        row.item.tag === 'offtopic_violation' ||
+                        /ненорматив|хамств|деловой этик|2\+\s*нарушен|off-topic|вне темы|предметн/i.test(
+                          row.item.comment,
+                        )
+                          ? 'Крит. ошибка'
+                          : 'Ошибка'}
+                      </span>
+                      <span className="text-[11px] font-semibold text-rose-700/80">
+                        {row.item.tag === 'etiquette_violation' ||
+                        /ненорматив|хамств|деловой этик|2\+\s*нарушен/i.test(
+                          row.item.comment,
+                        )
+                          ? 'КРИТИЧЕСКАЯ ОШИБКА • Деловая этика'
+                          : row.item.tag === 'offtopic_violation' ||
+                              /off-topic|вне темы|предметн/i.test(
+                                row.item.comment,
+                              )
+                            ? 'КРИТИЧЕСКАЯ ОШИБКА • Вне темы'
+                            : (stageMap.get(row.item.stageId) ?? row.item.stageId)}
+                      </span>
+                    </div>
+                    <div className="space-y-3 px-3.5 py-3.5">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Цитата
+                        </p>
+                        <p className="mt-1 text-sm font-medium italic text-slate-900">
+                          «{row.item.managerQuote?.trim() || '—'}»
+                        </p>
+                      </div>
+                      {row.item.tag === 'etiquette_violation' ||
+                      row.item.tag === 'offtopic_violation' ||
+                      /ненорматив|хамств|деловой этик|2\+\s*нарушен|off-topic|вне темы|предметн/i.test(
+                        row.item.comment,
+                      ) ? (
+                        <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500">
+                              Почему плохо
+                            </p>
+                            <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                              {row.item.comment ||
+                                'Использование ненормативной лексики и оскорблений (2+ нарушения). Сессия прервана автоматически.'}
+                            </p>
+                          </div>
+                          <div
+                            className="hidden pt-5 text-slate-300 sm:block"
+                            aria-hidden
+                          >
+                            ➔
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
+                              Как правильно
+                            </p>
+                            <p className="mt-1 text-sm leading-relaxed text-slate-800">
+                              {row.item.betterScript?.trim() ||
+                                'Сохраняйте профессиональный тон общения в любых ситуациях.'}
+                            </p>
+                          </div>
+                        </div>
+                      ) : !row.item.betterScript?.trim() ? (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500">
+                            Почему плохо
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                            {row.item.comment}
+                          </p>
+                        </div>
+                      ) : (
+                      <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500">
+                            Почему плохо
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                            {row.item.comment}
+                          </p>
+                        </div>
+                        <div
+                          className="hidden pt-5 text-slate-300 sm:block"
+                          aria-hidden
+                        >
+                          ➔
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
+                            Как сказать правильно
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-slate-800">
+                            «
+                            {row.item.betterScript?.trim() ||
+                              defaultBetterScriptForStage(row.item.stageId)}
+                            »
+                          </p>
+                        </div>
+                      </div>
+                      )}
+                    </div>
+                  </li>
+                ) : (
+                  <li
+                    key={`ok-${row.index}`}
+                    className={`overflow-hidden rounded-2xl border bg-white ${
+                      row.item.tag === 'strong_argument'
+                        ? 'border-amber-300 ring-1 ring-amber-200'
+                        : 'border-emerald-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2 border-b border-emerald-100 bg-emerald-50/80 px-3.5 py-2">
+                      <span className="rounded-md bg-emerald-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
+                        Успех
+                      </span>
+                      <span className="text-[11px] font-semibold text-emerald-700/80">
+                        {stageMap.get(row.item.stageId) ?? row.item.stageId}
+                      </span>
+                      {row.item.tag === 'strong_argument' && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white shadow-sm">
+                          ⚡ Сильная аргументация
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-3 px-3.5 py-3.5">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Цитата
+                        </p>
+                        <p className="mt-1 text-sm font-medium italic text-slate-900">
+                          «{row.item.managerQuote?.trim() || '—'}»
+                        </p>
+                      </div>
+                      <div>
+                        <p
+                          className={`text-[10px] font-bold uppercase tracking-wider ${
+                            row.item.tag === 'strong_argument'
+                              ? 'text-amber-600'
+                              : 'text-emerald-600'
+                          }`}
+                        >
+                          {row.item.tag === 'strong_argument'
+                            ? 'Комментарий РОПа'
+                            : 'Почему сработало'}
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                          {row.item.comment}
+                        </p>
+                      </div>
+                    </div>
+                  </li>
+                ),
+              )}
             </ul>
           )}
-        </div>
-      </header>
+        </section>
 
-      <section className="soft-card animate-fade-up stagger-2 rounded-[22px] p-5 sm:p-6">
-        <h2 className="font-display mb-5 text-base font-semibold text-slate-900">
-          Оценки по 5 этапам продаж
-        </h2>
-        <ul className="space-y-5">
-          {feedback.stageScores.map((item) => {
-            const zone = getZone(item.score)
-            const pct = (item.score / 10) * 100
-            return (
-              <li key={item.stageId}>
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-slate-800">
-                    {stageMap.get(item.stageId) ?? item.stageId}
-                  </span>
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums ring-1 ${zoneBadgeClass(zone)}`}
-                  >
-                    {item.score}
-                    <span className="font-medium opacity-60"> / 10</span>
-                  </span>
-                </div>
-                <div className="mb-2 h-2.5 overflow-hidden rounded-full bg-slate-100/90">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${zoneBarClass(zone)}`}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <p className="text-sm leading-relaxed text-slate-600">
-                  {item.comment}
-                </p>
-              </li>
-            )
-          })}
-        </ul>
-      </section>
-
-      <section className="soft-card animate-fade-up stagger-3 rounded-[22px] p-5 sm:p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-50 text-rose-500">
-            <AlertTriangle className="h-4 w-4" />
-          </div>
-          <div>
-            <h2 className="font-display text-base font-semibold text-slate-900">
-              Разбор ошибок
+        {/* —— 4. Сухой вердикт РОПа —— */}
+        <section className="animate-fade-up stagger-3 rounded-[22px] border-2 border-slate-800 bg-white p-5 sm:p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <Target className="h-4 w-4 text-slate-800" />
+            <h2 className="font-display text-base font-bold uppercase tracking-wide text-slate-900">
+              Точки роста на следующую тренировку
             </h2>
-            <p className="text-xs text-slate-500">Цитаты из ваших реплик в чате</p>
           </div>
-        </div>
-
-        {enrichedMistakes.length === 0 ? (
-          <p className="text-sm text-slate-500">Критических ошибок не найдено.</p>
-        ) : (
-          <ul className="space-y-4">
-            {enrichedMistakes.map((mistake, i) => (
+          <ul className="space-y-3">
+            {growthPoints.map((point, i) => (
               <li
-                key={`${mistake.stageId}-${i}`}
-                className="rounded-2xl border border-rose-100/80 bg-gradient-to-br from-rose-50/90 to-white/90 p-4"
+                key={point}
+                className="flex gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0"
               >
-                <p className="text-xs font-bold uppercase tracking-wide text-rose-500">
-                  {stageMap.get(mistake.stageId) ?? mistake.stageId}
-                </p>
-                <p className="mt-2 text-sm text-slate-600">{mistake.lead}</p>
-                <blockquote className="mt-2 flex gap-2 rounded-xl bg-white/90 px-3 py-3 text-sm font-medium italic text-slate-800 ring-1 ring-rose-100">
-                  <Quote className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" />
-                  <span>«{mistake.managerQuote}»</span>
-                </blockquote>
-                <p className="mt-3 text-sm leading-relaxed text-rose-600/90">
-                  {mistake.comment}
-                </p>
+                <span className="font-display mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded bg-slate-900 text-xs font-bold text-white">
+                  {i + 1}
+                </span>
+                <p className="text-sm leading-relaxed text-slate-800">{point}</p>
               </li>
             ))}
           </ul>
-        )}
-      </section>
+        </section>
 
-      <section className="soft-card animate-fade-up stagger-4 rounded-[22px] p-5 sm:p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
-            <Lightbulb className="h-4 w-4" />
-          </div>
-          <h2 className="font-display text-base font-semibold text-slate-900">
-            Рекомендации от ИИ
-          </h2>
-        </div>
-        <ul className="space-y-3">
-          {recommendations.map((rec, index) => (
-            <li
-              key={rec}
-              className="flex gap-3 rounded-xl bg-blue-50/60 px-3 py-3 text-sm leading-relaxed text-slate-700 ring-1 ring-blue-100/70"
-            >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-700 text-xs font-bold text-white">
-                {index + 1}
-              </span>
-              <span>{rec}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {saveError ? (
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => void retrySave()}
-          className="btn-glow animate-fade-up stagger-5 flex w-full items-center justify-center gap-2 rounded-full py-4 text-sm font-bold disabled:opacity-60"
-        >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Повторить сохранение
-        </button>
-      ) : (
         <button
           type="button"
           onClick={goHome}
-          className="btn-glow animate-fade-up stagger-5 flex w-full items-center justify-center gap-2 rounded-full py-4 text-sm font-bold"
+          className="animate-fade-in mx-auto flex items-center gap-1.5 text-sm text-slate-500 transition hover:text-brand"
         >
-          На главную
+          <ArrowLeft className="h-4 w-4" />
+          На дашборд
         </button>
-      )}
-    </div>
+      </div>
+    </>
   )
 }

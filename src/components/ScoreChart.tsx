@@ -15,14 +15,73 @@ interface Props {
   history: RoleplayHistoryItem[]
 }
 
-export function ScoreChart({ history }: Props) {
-  const sorted = [...history].sort((a, b) => a.date.localeCompare(b.date))
-  const week = sorted.slice(-7)
+type ChartPoint = { date: string; score: number; iso: string }
 
-  const data = week.map((item) => ({
-    date: formatDate(item.date),
+type ChartTooltipProps = {
+  active?: boolean
+  label?: string | number
+  payload?: ReadonlyArray<{ value?: unknown }>
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
+  if (!active || !payload?.length) return null
+  const value = payload[0]?.value
+  const display =
+    typeof value === 'number'
+      ? value.toFixed(1)
+      : typeof value === 'string'
+        ? value
+        : '—'
+  return (
+    <div className="rounded-xl border border-blue-100 bg-white px-3 py-2 shadow-[0_12px_32px_rgba(37,99,235,0.18)]">
+      <p className="text-[11px] font-medium text-slate-500">{label}</p>
+      <p className="font-display text-sm font-semibold text-slate-900">
+        Балл:{' '}
+        <span className="tabular-nums text-brand-dark">{display} / 10</span>
+      </p>
+    </div>
+  )
+}
+
+/** Сортировка сессий: дата, затем id (h-<timestamp>). */
+function sessionTs(item: RoleplayHistoryItem): number {
+  const fromId = Number(String(item.id).replace(/^h-/, ''))
+  if (Number.isFinite(fromId) && fromId > 0) return fromId
+  return Date.parse(item.date) || 0
+}
+
+function pointLabel(item: RoleplayHistoryItem, sameDayCount: number): string {
+  const day = formatDate(item.date)
+  if (sameDayCount <= 1) return day
+  const ts = sessionTs(item)
+  if (!ts) return day
+  const d = new Date(ts)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${day} ${hh}:${mm}`
+}
+
+/** Точка на каждую ролёвку (не схлопывать день) — иначе 3 сессии в один день = 1 точка без линии. */
+function buildChartData(history: RoleplayHistoryItem[]): ChartPoint[] {
+  const sorted = [...history].sort((a, b) => {
+    const byDate = a.date.localeCompare(b.date)
+    if (byDate !== 0) return byDate
+    return sessionTs(a) - sessionTs(b)
+  })
+  const recent = sorted.slice(-12)
+  const dayCounts = new Map<string, number>()
+  for (const item of recent) {
+    dayCounts.set(item.date, (dayCounts.get(item.date) ?? 0) + 1)
+  }
+  return recent.map((item) => ({
+    iso: item.date,
+    date: pointLabel(item, dayCounts.get(item.date) ?? 1),
     score: Number(item.totalScore.toFixed(1)),
   }))
+}
+
+export function ScoreChart({ history }: Props) {
+  const data = buildChartData(history)
 
   const avg =
     data.length > 0
@@ -31,7 +90,7 @@ export function ScoreChart({ history }: Props) {
 
   const delta =
     data.length >= 2
-      ? Number((data[data.length - 1].score - data[0].score).toFixed(1))
+      ? Number((data[data.length - 1]!.score - data[0]!.score).toFixed(1))
       : 0
 
   const last = data[data.length - 1]
@@ -82,25 +141,38 @@ export function ScoreChart({ history }: Props) {
       </div>
 
       <div className="relative h-56 w-full sm:h-64">
-        {last && (
+        {last ? (
           <div className="pointer-events-none absolute right-2 top-2 z-10 hidden rounded-xl bg-brand px-2.5 py-1 text-xs font-bold text-white shadow-[0_8px_20px_rgba(59,130,246,0.35)] sm:block">
             {last.score}
           </div>
-        )}
+        ) : null}
+
         {data.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-400">
-            Пока нет данных для графика
+          <div className="flex h-full flex-col items-center justify-center rounded-2xl bg-gradient-to-br from-slate-50 to-blue-50/60 px-6 text-center ring-1 ring-slate-100">
+            <p className="font-display text-sm font-semibold text-slate-800">
+              График появится после первой ролёвки
+            </p>
+            <p className="mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
+              Сделайте первую ролёвку для получения аналитики и динамики баллов
+            </p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 12, right: 12, left: -18, bottom: 0 }}>
+            <AreaChart
+              data={data}
+              margin={{ top: 12, right: 12, left: -18, bottom: 0 }}
+            >
               <defs>
                 <linearGradient id="scoreFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.28} />
                   <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="4 4" stroke="#e8eef7" vertical={false} />
+              <CartesianGrid
+                strokeDasharray="4 4"
+                stroke="#e8eef7"
+                vertical={false}
+              />
               <XAxis
                 dataKey="date"
                 tick={{ fill: '#94a3b8', fontSize: 12 }}
@@ -119,7 +191,7 @@ export function ScoreChart({ history }: Props) {
                   border: '1px solid #dbeafe',
                   boxShadow: '0 10px 30px rgba(59,130,246,0.12)',
                 }}
-                formatter={(value) => [`${value} / 10`, 'Балл']}
+                content={ChartTooltip}
               />
               <Area
                 type="monotone"

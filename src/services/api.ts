@@ -3,6 +3,7 @@ import type {
   ClientSession,
   DashboardData,
   DialogueHistory,
+  DialogueSnapshot,
   FeedbackResult,
   FeedbackSession,
   ManagerProfile,
@@ -11,9 +12,20 @@ import type {
   RoleplaySavePayload,
   SmartReplyResult,
 } from '../types'
-import { routeSmartReply } from '../utils/intentRouter'
-import { buildDynamicFeedback, type IntentLogItem } from '../utils/feedbackScore'
+import {
+  openingReply,
+  runDialogueTurn,
+  warmNlu,
+  type DialogueContext,
+} from '../dialogue/engine'
+import {
+  resolveGlobalSessionGuards,
+} from './roleplayApi'
+import { analyzeRoleplayFeedback, type IntentLogItem } from './feedbackEngine'
 import { todayIso, yesterdayIso } from '../utils/zones'
+
+// Прогрев NLU при загрузке модуля
+warmNlu()
 
 const STORAGE_KEY = 'ai-trenazher-state-v2'
 const NETWORK_DELAY_MS = 300
@@ -85,11 +97,8 @@ export async function getClientById(id: string): Promise<ClientSession> {
 }
 
 /**
- * Умный роутер ответа клиента.
- * Классифицирует реплику менеджера (greeting / price / discovery / objection / confused)
- * и отдаёт адекватную реплику из мока. На offtopic шаг диалога не двигается.
- *
- * При подключении LLM замените тело функции — UI менять не нужно.
+ * Диалоговый движок: NLU → FSM (этап/настроение) → политика ответа.
+ * UI менять не нужно — контракт SmartReplyResult сохранён.
  */
 export async function getSmartReply(
   userText: string,
@@ -105,29 +114,84 @@ export async function getSmartReply(
     .filter((m) => m.role === 'client')
     .map((m) => m.text)
 
-  return routeSmartReply(
+  // Стартовая реплика чата (системный пинг удобства)
+  const isOpeningPing =
+    history.messages.length === 0 &&
+    /удобно|здравствуй|добрый/i.test(userText)
+
+  if (isOpeningPing && !history.dialogueState) {
+    const opened = openingReply(history.clientId)
+    return {
+      reply: opened.reply,
+      nextStep: opened.nextStep,
+      intent: opened.intent,
+      intentId: opened.intentId,
+      dialogueState: opened.dialogueState as SmartReplyResult['dialogueState'],
+      nluScore: opened.nluScore,
+      policyId: opened.policyId,
+      typingDelayMs: opened.typingDelayMs,
+      clientReading: opened.clientReading,
+    }
+  }
+
+  // Глобальные гварды (одинаковы для marina / artem / любой персоны):
+  // 1) мат/этика → 2) оффтоп → иначе 3) FSM персонажа ниже
+  const guard = resolveGlobalSessionGuards({
     userText,
-    history.scriptStep,
-    client.scenario,
-    clientReplies,
-    history.clientId,
-    history.messages,
-  )
+    clientId: history.clientId,
+    historyMessages: history.messages,
+    dialogueState: history.dialogueState ?? null,
+    scriptStep: history.scriptStep,
+  })
+  if (guard.kind === 'block') {
+    return guard.result
+  }
+
+  const result = runDialogueTurn({
+    userText,
+    clientId: history.clientId,
+    dialogueState: (history.dialogueState as DialogueContext | null) ?? null,
+    usedClientReplies: clientReplies,
+  })
+
+  const patchedState = result.dialogueState
+    ? {
+        ...result.dialogueState,
+        slots: {
+          ...result.dialogueState.slots,
+          offTopicCount: guard.offTopicCount,
+        },
+      }
+    : result.dialogueState
+
+  return {
+    reply: result.reply,
+    nextStep: result.nextStep,
+    intent: result.intent,
+    intentId: result.intentId,
+    dialogueState: patchedState as SmartReplyResult['dialogueState'],
+    nluScore: result.nluScore,
+    policyId: result.policyId,
+    typingDelayMs: result.typingDelayMs,
+    clientReading: result.clientReading,
+  }
 }
 
-/** Шаблон разбора + динамический скоринг по интентам чата + реальные цитаты. */
+/** Строгий ROP-разбор по реальным репликам менеджера + intent-лог. */
 export async function buildFeedbackSession(
   clientId: string,
   managerMessages: string[],
   intentLog: IntentLogItem[] = [],
+  dialogueState?: DialogueSnapshot | null,
 ): Promise<FeedbackSession> {
   await delay(300)
   const client = await getClientById(clientId)
-  const { feedback, insights } = buildDynamicFeedback(
-    client.feedback,
-    intentLog,
+  const { feedback, insights } = analyzeRoleplayFeedback({
     managerMessages,
-  )
+    intentLog,
+    clientName: client.name,
+    dialogueState: dialogueState ?? undefined,
+  })
 
   return {
     clientId: client.id,
@@ -295,5 +359,14 @@ export async function getHistoryFeedback(historyId: string): Promise<FeedbackSes
 }
 
 export function resetProgress(): void {
-  localStorage.removeItem(STORAGE_KEY)
+  const base = cloneData()
+  // Обнуляем прогресс: профиль к сиду, история пустая — видно Empty State.
+  saveState({
+    manager: {
+      ...base.manager,
+      streakDays: 0,
+      dailyPlan: base.manager.dailyPlan.map((t) => ({ ...t, done: false })),
+    },
+    history: [],
+  })
 }
