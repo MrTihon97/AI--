@@ -360,11 +360,12 @@ export async function getHistoryFeedback(historyId: string): Promise<FeedbackSes
 
 export function resetProgress(): void {
   const base = cloneData()
-  // Обнуляем прогресс: профиль к сиду, история пустая — видно Empty State.
+  // Полный ноль: стрик, план, история и баллы этапов.
   saveState({
     manager: {
       ...base.manager,
       streakDays: 0,
+      stages: base.manager.stages.map((s) => ({ ...s, score: 0 })),
       dailyPlan: base.manager.dailyPlan.map((t) => ({ ...t, done: false })),
     },
     history: [],

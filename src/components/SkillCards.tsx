@@ -49,7 +49,6 @@ const STAGE_TIPS: Record<string, string> = {
 
 export function SkillCards({ stages }: Props) {
   const [selected, setSelected] = useState<StageProgress | null>(null)
-  const selectedZone = selected ? getZone(selected.score) : null
 
   return (
     <section className="animate-fade-up stagger-1">
@@ -64,8 +63,9 @@ export function SkillCards({ stages }: Props) {
 
       <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
         {stages.map((stage, i) => {
-          const zone = getZone(stage.score)
-          const pct = Math.min(100, (stage.score / 10) * 100)
+          const empty = stage.score <= 0
+          const zone = empty ? null : getZone(stage.score)
+          const pct = empty ? 0 : Math.min(100, (stage.score / 10) * 100)
           const Icon = STAGE_ICONS[stage.id] ?? Target
 
           return (
@@ -77,14 +77,22 @@ export function SkillCards({ stages }: Props) {
             >
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-xl ring-1 ${ICON_WRAP[zone]}`}
+                  className={`flex h-9 w-9 items-center justify-center rounded-xl ring-1 ${
+                    empty
+                      ? 'bg-slate-50 text-slate-400 ring-slate-100'
+                      : ICON_WRAP[zone!]
+                  }`}
                 >
                   <Icon className="h-4 w-4" strokeWidth={2} />
                 </div>
                 <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ring-1 ${zoneBadgeClass(zone)}`}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ring-1 ${
+                    empty
+                      ? 'bg-slate-50 text-slate-500 ring-slate-100'
+                      : zoneBadgeClass(zone!)
+                  }`}
                 >
-                  {zoneShortLabel(zone)}
+                  {empty ? 'Нет данных' : zoneShortLabel(zone!)}
                 </span>
               </div>
 
@@ -93,7 +101,9 @@ export function SkillCards({ stages }: Props) {
               </h3>
 
               <p
-                className={`font-display text-[1.65rem] font-bold leading-none tabular-nums ${zoneTextClass(zone)}`}
+                className={`font-display text-[1.65rem] font-bold leading-none tabular-nums ${
+                  empty ? 'text-slate-400' : zoneTextClass(zone!)
+                }`}
               >
                 {stage.score.toFixed(1)}
                 <span className="text-sm font-semibold text-slate-300"> / 10</span>
@@ -101,7 +111,9 @@ export function SkillCards({ stages }: Props) {
 
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
                 <div
-                  className={`h-full rounded-full transition-all duration-700 ${zoneBarClass(zone)}`}
+                  className={`h-full rounded-full transition-all duration-700 ${
+                    empty ? 'bg-slate-200' : zoneBarClass(zone!)
+                  }`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -110,10 +122,10 @@ export function SkillCards({ stages }: Props) {
         })}
       </div>
 
-      {selected && selectedZone && (
+      {selected && (
         <SkillTipModal
           stage={selected}
-          zone={selectedZone}
+          zone={selected.score <= 0 ? null : getZone(selected.score)}
           tip={
             STAGE_TIPS[selected.id] ??
             'Тренируйте этот этап в следующей ролёвке.'
@@ -132,7 +144,7 @@ function SkillTipModal({
   onClose,
 }: {
   stage: StageProgress
-  zone: Zone
+  zone: Zone | null
   tip: string
   onClose: () => void
 }) {
@@ -174,11 +186,18 @@ function SkillTipModal({
           </button>
         </div>
         <p
-          className={`font-display text-3xl font-bold tabular-nums ${zoneTextClass(zone)}`}
+          className={`font-display text-3xl font-bold tabular-nums ${
+            zone ? zoneTextClass(zone) : 'text-slate-400'
+          }`}
         >
           {stage.score.toFixed(1)}
           <span className="text-base text-slate-300"> / 10</span>
         </p>
+        {zone == null && (
+          <p className="mt-1 text-xs font-medium text-slate-400">
+            Пока нет ролёвок — балл появится после первой тренировки
+          </p>
+        )}
         <p className="mt-3 text-sm leading-relaxed text-slate-600">{tip}</p>
         <button
           type="button"
