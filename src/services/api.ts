@@ -74,13 +74,44 @@ function getDb(): MockData {
   }
 }
 
+/**
+ * Баллы этапов на дашборде = среднее по истории ролёвок.
+ * Пустая история → 0 (не мок и не EMA от нуля).
+ */
+function stagesFromHistory(
+  baseStages: ManagerProfile['stages'],
+  history: RoleplayHistoryItem[],
+): ManagerProfile['stages'] {
+  if (history.length === 0) {
+    return baseStages.map((s) => ({ ...s, score: 0 }))
+  }
+  return baseStages.map((stage) => {
+    const vals = history
+      .map((h) => h.stageScores?.[stage.id])
+      .filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+    if (vals.length === 0) return { ...stage, score: 0 }
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length
+    return { ...stage, score: Number(avg.toFixed(1)) }
+  })
+}
+
 /** Дашборд: профиль, этапы, план, история, список клиентов. */
 export async function getDashboardData(): Promise<DashboardData> {
   await delay(300)
   const db = getDb()
+  const stages = stagesFromHistory(db.manager.stages, db.history)
+  const manager: ManagerProfile = { ...db.manager, stages }
+  // Подтягиваем исправленные этапы в storage (чинит старый EMA от нуля)
+  if (
+    stages.some(
+      (s, i) => Math.abs(s.score - (db.manager.stages[i]?.score ?? -1)) > 0.05,
+    )
+  ) {
+    saveState({ manager, history: db.history })
+  }
   return {
     product: db.product,
-    manager: db.manager,
+    manager,
     history: [...db.history].sort((a, b) => b.date.localeCompare(a.date)),
     clients: db.clients,
   }
@@ -226,12 +257,7 @@ export async function saveRoleplayResult(
 
   const history = [newItem, ...db.history]
 
-  const stages = db.manager.stages.map((stage) => {
-    const fresh = result.stageScores[stage.id]
-    if (fresh == null) return stage
-    const score = Number((stage.score * 0.7 + fresh * 0.3).toFixed(1))
-    return { ...stage, score }
-  })
+  const stages = stagesFromHistory(db.manager.stages, history)
 
   let markedTask = false
   const dailyPlan = db.manager.dailyPlan.map((task) => {
